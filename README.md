@@ -7,12 +7,13 @@ Modifier-Taste (Standard: **⌥ Option**) halten und mit dem Finger auf dem Trac
 - ↻ im Uhrzeigersinn = nach unten scrollen
 - ↺ gegen den Uhrzeigersinn = nach oben scrollen
 
-Der Mauszeiger bleibt dabei stehen. Die Kreisgröße ist egal – eine Umdrehung scrollt immer gleich weit, wie ein Jog-Dial.
+Der Mauszeiger bleibt dabei stehen. Die Kreisgröße ist egal – wie weit gescrollt wird, hängt nur von der Drehung und deren Tempo ab, wie bei einem Jog-Dial.
 
 ## Einstellungen (Menüleisten-Symbol)
 
 - Taste: ⌥ / ⌃ / ⌘ / ⇧ / fn
 - Geschwindigkeit (4 Stufen)
+- Beschleunigung: schnelles Kreisen scrollt weiter, langsames feiner (Aus / Leicht / Mittel / Stark)
 - Richtung umkehren
 - Bei Anmeldung starten
 - Ein/Aus

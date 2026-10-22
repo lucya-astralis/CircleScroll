@@ -43,6 +43,14 @@ let sensitivityLevels: [(title: String, pixelsPerTurn: Double)] = [
     ("Sehr schnell", 2400),
 ]
 
+/// Exponent der Beschleunigung: 0 = konstant, höher = schnelles Kreisen scrollt überproportional weiter.
+let accelerationLevels: [(title: String, exponent: Double)] = [
+    ("Aus", 0),
+    ("Leicht", 0.5),
+    ("Mittel", 1.0),
+    ("Stark", 1.5),
+]
+
 final class Settings {
     private let defaults = UserDefaults.standard
 
@@ -52,7 +60,13 @@ final class Settings {
             "modifier": Modifier.option.rawValue,
             "pixelsPerTurn": 600.0,
             "inverted": false,
+            "acceleration": 1.0,
         ])
+    }
+
+    var acceleration: Double {
+        get { defaults.double(forKey: "acceleration") }
+        set { defaults.set(newValue, forKey: "acceleration") }
     }
 
     var enabled: Bool {
@@ -90,14 +104,26 @@ final class CircleScroller {
     private var accX = 0.0, accY = 0.0
     private var prevDir: (x: Double, y: Double)?
     private var lastMove: TimeInterval = 0
+    private var lastSegment: TimeInterval = 0
+    private var angularSpeed: Double?   // geglättet, in Umdrehungen pro Sekunde
     private var pixelRemainder = 0.0
 
     /// Mindestlänge eines Bewegungssegments, bevor dessen Richtung ausgewertet wird.
-    private let minSegment = 3.0
+    /// Langsame Bewegungen liefern nur 1–2 px große Deltas; zu kurze Segmente hätten stark gerasterte Richtungen.
+    private let minSegment = 5.0
     /// Größere Richtungswechsel pro Segment gelten als Zacke/Umkehr, nicht als Kreisbewegung.
     private let maxTurn = 2.0
     /// Nach dieser Pause beginnt eine neue Geste.
     private let idleReset = 0.25
+    /// Bei dieser Kreisgeschwindigkeit (Umdrehungen/s) gilt die eingestellte Grund-Geschwindigkeit 1:1.
+    private let referenceSpeed = 1.0
+    private let gainRange = 0.25...6.0
+    /// Glättung der gemessenen Kreisgeschwindigkeit (0…1, höher = reagiert schneller).
+    private let speedSmoothing = 0.3
+    /// Gegenbewegung (rad), ab der die Drehrichtung tatsächlich wechselt (~23°). Kleinere Wackler werden verrechnet.
+    private let reverseThreshold = 0.4
+    private var direction = 0.0   // +1 = Uhrzeigersinn, −1 = gegen, 0 = noch offen
+    private var heldBack = 0.0    // zurückgehaltene Gegenbewegung (rad)
 
     init(settings: Settings) {
         self.settings = settings
@@ -184,7 +210,26 @@ final class CircleScroller {
     private func startGesture() {
         accX = 0; accY = 0
         prevDir = nil
+        angularSpeed = nil
+        direction = 0
+        heldBack = 0
         pixelRemainder = 0
+    }
+
+    /// Hält kurze Gegenbewegungen zurück und verrechnet sie mit der folgenden Vorwärtsdrehung,
+    /// damit Rauschen bei langsamen Bewegungen nicht hin- und herscrollt.
+    private func debounce(_ turn: Double) -> Double {
+        if turn * direction > 0 {
+            let used = min(abs(turn), heldBack)
+            heldBack -= used
+            return turn - used * direction
+        }
+        heldBack += abs(turn)
+        guard heldBack > reverseThreshold else { return 0 }
+        direction = turn > 0 ? 1 : -1
+        let out = heldBack * direction
+        heldBack = 0
+        return out
     }
 
     /// Summiert die Drehung der Bewegungsrichtung. Über eine volle Kreisbahn
@@ -199,6 +244,8 @@ final class CircleScroller {
         guard len >= minSegment else { return }
         let dir = (x: accX / len, y: accY / len)
         accX = 0; accY = 0
+        let dt = max(now - lastSegment, 0.004)
+        lastSegment = now
         defer { prevDir = dir }
         guard let prev = prevDir else { return }
 
@@ -208,8 +255,15 @@ final class CircleScroller {
         let turn = atan2(cross, dot)
         guard abs(turn) <= maxTurn else { return }
 
+        // Variable Geschwindigkeit: schnelles Kreisen scrollt weiter pro Umdrehung, langsames feiner.
+        let speed = abs(turn) / (2 * .pi) / dt
+        let smoothed = angularSpeed.map { $0 + (speed - $0) * speedSmoothing } ?? speed
+        angularSpeed = smoothed
+        let gain = pow(smoothed / referenceSpeed, settings.acceleration)
+            .clamped(to: gainRange)
+
         // Uhrzeigersinn → nach unten scrollen (negativer Wheel-Wert).
-        var pixels = -turn / (2 * .pi) * settings.pixelsPerTurn
+        var pixels = -debounce(turn) / (2 * .pi) * settings.pixelsPerTurn * gain
         if settings.inverted { pixels = -pixels }
         scroll(pixels)
     }
@@ -226,6 +280,12 @@ final class CircleScroller {
         ev.flags = []
         ev.location = anchor
         ev.post(tap: .cgSessionEventTap)
+    }
+}
+
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 
@@ -310,6 +370,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sensItem.submenu = sensMenu
         menu.addItem(sensItem)
 
+        let accelMenu = NSMenu()
+        for (index, level) in accelerationLevels.enumerated() {
+            let item = NSMenuItem(title: level.title, action: #selector(selectAcceleration(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            item.state = settings.acceleration == level.exponent ? .on : .off
+            accelMenu.addItem(item)
+        }
+        let accelItem = NSMenuItem(title: "Beschleunigung", action: nil, keyEquivalent: "")
+        accelItem.submenu = accelMenu
+        menu.addItem(accelItem)
+
         let invert = NSMenuItem(title: "Richtung umkehren", action: #selector(toggleInverted), keyEquivalent: "")
         invert.target = self
         invert.state = settings.inverted ? .on : .off
@@ -344,6 +416,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func selectSensitivity(_ sender: NSMenuItem) {
         settings.pixelsPerTurn = sensitivityLevels[sender.tag].pixelsPerTurn
+    }
+
+    @objc func selectAcceleration(_ sender: NSMenuItem) {
+        settings.acceleration = accelerationLevels[sender.tag].exponent
     }
 
     @objc func toggleInverted() {
